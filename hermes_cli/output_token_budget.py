@@ -17,6 +17,10 @@ logger = logging.getLogger(__name__)
 _OUTPUT_BUDGET_KEY = "output_token_budget"
 
 
+class OutputTokenBudgetAlignmentError(RuntimeError):
+    """Configured ``output_token_budget`` cannot be applied on both wire and context engine."""
+
+
 def coerce_output_token_budget(raw: Any) -> Optional[int]:
     """Positive int budget, or None when unset/invalid."""
     if raw is None or isinstance(raw, bool):

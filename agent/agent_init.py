@@ -1853,23 +1853,34 @@ def _select_context_engine(_agent_cfg):
 
 
 def _context_engine_update_model_accepts_max_tokens(engine) -> bool:
-    from inspect import signature
+    """True when host can pass ``max_tokens`` into ``update_model`` (VCC uses ``**kwargs``)."""
+    from inspect import Parameter, signature
 
-    return "max_tokens" in signature(engine.update_model).parameters
+    from agent.context_compressor import ContextCompressor
+
+    if isinstance(engine, ContextCompressor):
+        return True
+    sig = signature(engine.update_model)
+    if "max_tokens" in sig.parameters:
+        return True
+    return any(p.kind == Parameter.VAR_KEYWORD for p in sig.parameters.values())
 
 
 def _reject_unsupported_output_budget(agent) -> None:
+    from hermes_cli.output_token_budget import OutputTokenBudgetAlignmentError
+
     if not getattr(agent, "_output_token_budget_from_config", False) or agent.max_tokens is None:
         return
     if _context_engine_update_model_accepts_max_tokens(agent.context_compressor):
         return
-    _ra().logger.error(
-        "output_token_budget is set for this route but context engine %r does not accept "
-        "max_tokens in update_model() — budget dropped (wire and reserve must stay aligned)",
-        getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__),
+    _engine = getattr(
+        agent.context_compressor, "name", type(agent.context_compressor).__name__,
     )
-    agent.max_tokens = None
-    agent._output_token_budget_from_config = False
+    raise OutputTokenBudgetAlignmentError(
+        f"providers output_token_budget is set for this route but context engine {_engine!r} "
+        "cannot take max_tokens via update_model(); refuse misaligned wire-only cap "
+        "(fix context.engine or remove output_token_budget for this provider).",
+    )
 
 
 def _compressor_max_tokens(agent):
