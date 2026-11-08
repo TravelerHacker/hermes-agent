@@ -1852,6 +1852,26 @@ def _select_context_engine(_agent_cfg):
     return _selected_engine
 
 
+def _context_engine_update_model_accepts_max_tokens(engine) -> bool:
+    from inspect import signature
+
+    return "max_tokens" in signature(engine.update_model).parameters
+
+
+def _reject_unsupported_output_budget(agent) -> None:
+    if not getattr(agent, "_output_token_budget_from_config", False) or agent.max_tokens is None:
+        return
+    if _context_engine_update_model_accepts_max_tokens(agent.context_compressor):
+        return
+    _ra().logger.error(
+        "output_token_budget is set for this route but context engine %r does not accept "
+        "max_tokens in update_model() — budget dropped (wire and reserve must stay aligned)",
+        getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__),
+    )
+    agent.max_tokens = None
+    agent._output_token_budget_from_config = False
+
+
 def _compressor_max_tokens(agent):
     """``agent.max_tokens``, or the native-Gemini adapter default when unset: generateContent
     still sends maxOutputTokens=65,535 and the threshold is pct×(window − max_tokens), so
@@ -1874,6 +1894,7 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     _selected_engine = _select_context_engine(_agent_cfg)
     if _selected_engine is not None:
         agent.context_compressor = _selected_engine
+        _reject_unsupported_output_budget(agent)
         # External engines own compaction policy — the host threshold (and its Codex
         # autoraise) never reaches the plugin, so drop the notice.
         agent._compression_threshold_autoraised = None
@@ -1890,10 +1911,13 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         # resolution already sees them.
         if cs.model_thresholds:
             agent.context_compressor.model_thresholds = cs.model_thresholds
-        agent.context_compressor.update_model(
+        _upd = dict(
             model=agent.model, context_length=_plugin_ctx_len, base_url=agent.base_url,
             api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
         )
+        if _context_engine_update_model_accepts_max_tokens(agent.context_compressor):
+            _upd["max_tokens"] = _compressor_max_tokens(agent)
+        agent.context_compressor.update_model(**_upd)
         if not agent.quiet_mode:
             _ra().logger.info("Using context engine: %s", _selected_engine.name)
     else:
@@ -2156,6 +2180,7 @@ def init_agent(
     _params = locals()
     for _name in _PASSTHROUGH_PARAMS:
         setattr(agent, _name, _params[_name])
+    agent._max_tokens_user_pinned = agent.max_tokens is not None
     for _name in _GATEWAY_IDENTITY_PARAMS:
         setattr(agent, f"_{_name}", _params[_name])
     agent.session_cwd = cwd or None
@@ -2248,6 +2273,9 @@ def init_agent(
     _config_context_length, _custom_providers, _effective_context_length, _model_cfg = _resolve_context_length(
         agent, _agent_cfg, base_url
     )
+    from hermes_cli.output_token_budget import apply_route_output_token_budget
+
+    apply_route_output_token_budget(agent, _agent_cfg)
     _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_context_length, session_db)
     _configure_ollama_num_ctx(agent, _model_cfg, _config_context_length)
     _enforce_minimum_context(agent)

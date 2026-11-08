@@ -2327,14 +2327,35 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             agent.model, base_url=agent.base_url, api_key=ctx_api_key, provider=agent.provider,
             config_context_length=effective_context_length, custom_providers=custom_providers,
         )
-        agent.context_compressor.update_model(
+        if not getattr(agent, "_max_tokens_user_pinned", False):
+            agent.max_tokens = None
+            agent._output_token_budget_from_config = False
+            try:
+                from hermes_cli.config import load_config as _sw_cfg
+
+                from hermes_cli.output_token_budget import apply_route_output_token_budget
+
+                apply_route_output_token_budget(agent, _sw_cfg() or {})
+            except Exception:
+                pass
+        from agent.agent_init import (
+            _compressor_max_tokens,
+            _context_engine_update_model_accepts_max_tokens,
+            _reject_unsupported_output_budget,
+        )
+
+        _reject_unsupported_output_budget(agent)
+        _sw_upd = dict(
             model=agent.model,
             context_length=new_context_length,
             base_url=agent.base_url,
-            api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
+            api_key=agent.api_key,
             provider=agent.provider,
             api_mode=agent.api_mode,
         )
+        if _context_engine_update_model_accepts_max_tokens(agent.context_compressor):
+            _sw_upd["max_tokens"] = _compressor_max_tokens(agent)
+        agent.context_compressor.update_model(**_sw_upd)
     except Exception:
         _restore_switch_snapshot(agent, snapshot)
         raise

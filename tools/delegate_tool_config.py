@@ -650,7 +650,20 @@ def _resolve_child_runtime(
     }
     if not override_provider:
         kwargs["provider_data_collection"] = kwargs["provider_data_collection"] or ""
-    child_max_tokens = getattr(parent_agent, "max_tokens", None)
-    if isinstance(child_max_tokens, int):
-        kwargs["max_tokens"] = child_max_tokens
+    try:
+        from hermes_cli.config import load_config_readonly
+        from hermes_cli.output_token_budget import resolve_route_output_token_budget
+
+        _cfg = load_config_readonly()
+        child_budget = resolve_route_output_token_budget(
+            _cfg if isinstance(_cfg, dict) else {},
+            provider=effective_provider,
+            base_url=effective_base_url,
+            model=effective_model,
+            requested_provider=effective_requested_provider,
+        )
+        if child_budget is not None:
+            kwargs["max_tokens"] = child_budget
+    except Exception:
+        pass
     return kwargs
